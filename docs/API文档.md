@@ -47,6 +47,10 @@
 - **旧接口迁移**：`/api/ingest/*`（files/upload/books）为历史接口、无鉴权，已废弃；当前前端全部走带 Bearer 的 `/api/documents/*`。
 - **一致性提示**：`frontend/.env.example` 中定义了 `VITE_API_BASE`，但当前 `api/index.js` 并未消费它（走 Vite 代理 + 同源），该变量为遗留定义，勿依赖。
 
+### 1.6 链路追踪（X-Request-Id）
+
+每个请求（含 SSE 流）在响应头携带 `X-Request-Id`——HTTP 中间件从请求头提取或后端生成，注入全部日志并可回写响应头，用于跨"前端 → 后端 → 事件总线 → 图节点"定位一次完整请求（实现见《AI架构设计.md》§10）。
+
 ---
 
 ## 2. 接口总表
@@ -595,6 +599,8 @@ curl -s http://localhost:8000/api/health
 | `job_done` / `job_failed` | `{"type":"job_done","job_id":"djob_x","done_chapters":120,"failed_chapters":0}` | 任务终态 |
 
 > 另存在无 `type` 的裸事件 `chapter_results`（LangGraph 归约产物），前端忽略。
+
+> 事件由 `events.py` 进程内事件总线发布/订阅（`publish`/`subscribe`，按 job_id 过滤，见《AI架构设计.md》§25），SSE 生成器实时订阅、连接断开时退订。
 
 ### 9.7 GET /api/novel/books/{book_id}/query — 结构化查询
 

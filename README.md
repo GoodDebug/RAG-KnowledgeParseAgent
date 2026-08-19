@@ -70,13 +70,14 @@
 **小说解构 / 知识图谱**
 
 - 章节解构：小说上传（`deconstruct=1`）或一键解构，LangGraph 图编排（JobGraph → ChapterGraph）逐章并行解构
-- 8 个并行解构 Agent：实体 / 快照 / 关系 / 时间线 / 地点 / 伏笔 / 冲突 / 规则，输出契约 Pydantic 强校验 + 缩窗重试
+- 8 个并行解构 Agent：实体 / 快照 / 关系 / 时间线 / 地点 / 伏笔 / 冲突 / 规则；每类知识一套结构化抽取 Prompt 工程（skills）——base 铁律（只按原文/只出 JSON/不编造/缺省 null）+ 专属枚举与判定边界 + 3-shot 跨题材 Few-shot 示例（2 正 1 错）+ Pydantic JSON Schema 强校验 + source_fragment 原文锚定
+- 增量提取与跨章对齐：entity_snapshot 注入上一章已入库快照（prev_snapshot_context）只输出变化；hint_entities 跨章命名对齐名单防止同物异名
 - 结构化知识库：19 张 MySQL 表（含 15 张解构表），幂等入库 + 跨章生命周期（关系/冲突/规则合并去重）
 - 知识图谱：1-hop 关系图，时态 as-of N 可回放
 - 实体百科：实体卡 + 快照演化时间轴 + 出场热力图，章节滑块时态切换
 - 实体卡饱满度（二阶段）：L0-L4 五区（身份锚点 / 静态基线 / 当前状态 / 聚合弧光 / 伏笔规则·明暗）+ 三态标注（原文直证/合理推断/待复核）+ 状态累积回填（逐属性最近非空）+ 置信度弱视觉
 - 数据浏览：10 类结构化数据分页 + 字段筛选/模糊查询
-- 一致性校验 + 人工复核：Layer 0/1/2 校验，可疑项进复核工作台，原文证据分屏，通过/忽略/修正裁决 + confidence 闭环
+- Agent 可靠性体系（Guardrails）：三层校验（Layer 0/1 确定性 + Layer 2 validator Agent 批校验）+ confidence 置信度闭环 + 人工复核工作台（原文证据分屏裁决）+ savepoint 隔离 + 乐观锁多进程守卫
 
 **加分项**
 
@@ -87,8 +88,10 @@
 
 - 每日限流：按用户统计当日提问次数，超限返回 429
 - 空检索兜底：知识库无命中时降级为模型自身知识回答，仍为空则返回兜底文案
-- MCP 子进程：RAG 检索 / 入库 / 删除作为 MCP 工具由 LLM 动态调用，子进程常驻复用
+- MCP 工具设计开发：设计并开发 4 个 FastMCP 工具（RAG 检索 / 入库 / 删除 + 天气查询），由 LLM 经 Function Calling 动态调用，子进程常驻复用
 - SSE 逐字输出：`status / thinking / intent / tool / answer / followup / done` 多事件流
+- 可观测性：events.py 事件总线 + SSE 进度流（job/chapter/agent 三级）+ request_id 全链路日志追踪
+- LLM 结构化输出鲁棒性：JSON 容错解析（剥围栏 / 平衡块 / 数组包裹）+ Pydantic 强校验 + 缩窗重试 + 低温 0.0
 - 网页爬虫：单页 / 批量抓取 + 小说章节发现与批量下载（Playwright 双模式）
 
 ---
@@ -159,7 +162,7 @@ flowchart TD
 
 一句话链路：用户提问经限流校验后，先做意图识别与问题优化，再由 BGE 向量召回 + Cross-Encoder 精排从知识库取出相关内容，组装进 Prompt 交给 DeepSeek 流式生成回答；回答逐字输出并携带引用来源，最终消息与会话落库到 MySQL，并触发追问建议，形成完整闭环。
 
-**解构子系统链路**：小说上传（`deconstruct=1`）→ 章节切分入库 → LangGraph 图编排（JobGraph 整书 → ChapterGraph 单章 → 8 个解构 Agent 并行抽取）→ 校验归并 → 11 表幂等入库 → 跨章一致性校验 → 人工复核 → 知识图谱 / 实体百科浏览。
+**解构子系统链路**：小说上传（`deconstruct=1`）→ 章节切分入库 → LangGraph 图编排（JobGraph 整书 → ChapterGraph 单章 → 8 个解构 Agent 并行抽取）→ 校验归并 → 11 表幂等入库 → 跨章一致性校验 → 人工复核 → 知识图谱 / 实体百科浏览。全程经 events.py 事件总线 + SSE 进度流可观测。
 
 ```mermaid
 flowchart TD

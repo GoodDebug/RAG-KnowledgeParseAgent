@@ -187,9 +187,20 @@ SystemMessage(system_prompt)            # 五.1 的六要素模板
 
 ---
 
-## 7. MCP 子进程架构
+## 7. MCP 工具设计开发与子进程架构
 
 RAG 的检索/入库/删除工具运行在独立的 **MCP 子进程**中，父进程（FastAPI）通过 stdio 协议与之通信。这样设计的核心收益是：**Embedding 与 Rerank 模型只在子进程加载一次、常驻复用**——模型加载是秒级且显存敏感的操作，若每次请求重新加载会显著拖慢首问并浪费显存。
+
+**工具清单（4 个，`@mcp.tool()` 注册）**：
+
+| 工具 | 作用 | 设计要点 |
+| --- | --- | --- |
+| `RAG_search_by_query` | 两阶段检索 | 复用子进程常驻 BGE Embedding + Reranker，返回 top-K 片段 |
+| `RAG_init_collection` | 文档入库 | 解析 → 分块 → 向量化 → `content_hash` 按 book_id 去重 → upsert Milvus |
+| `RAG_delete_by_book_id` | 整书删除 | 按 book_id 批量删向量 |
+| `get_weather` | 天气查询（和风 API） | 无模型轻量 HTTP 调用，验证工具注册/发现与向量链路解耦 |
+
+设计思路：RAG 三工具把"检索/入库/删除"从业务代码中解耦为可被 LLM 动态调用的能力边界（Function Calling）；天气工具证明 MCP 工具注册不绑定向量链路——启动时 `list_tools()` 统一发现全部工具并映射为 `openai_tools`。
 
 - **stdio 传输**：`MCP_SERVER/mcp.json` 配置 `transport: stdio`、`command: python`——父子进程通过标准输入/输出交换 JSON-RPC，无需额外网络端口。
 - **持久会话**：`PersistentMCPSession` 持有单个常驻子进程，所有工具调用复用同一进程（模型只加载一次）；`PersistentMCPTool` 对业务层保持 `tool.ainvoke(args)` 接口不变，内部走持久会话，业务层与 MCP 层解耦。
@@ -411,6 +422,8 @@ chapter_prepare → [Send(agent)×8 并行] → validate_chapter → merge_chapt
 4. **Pydantic 强校验**：`schema.model_validate(data)`，结构不合法 = 失败（不放脏数据入库）。
 5. **缩窗重试**：JSON 非法/校验不过 → `_shrink(scene_text, level)` 取前 `1/2^level`（level=1 前一半、level=2 前四分之一），最多 `NOVEL_AGENT_MAX_SHRINK=2` 次；每次把字段级反馈（`_retry_feedback`）拼进下一次 prompt。耗尽仍失败 → 抛 `LLMExtractError`（run_agent 捕获写 errors → validate 判 failed）。
 
+**增量提取（entity_snapshot 专用）**：`entity_snapshot_prompt.build_prompt(scene_text, *, few_shot=True, prev_snapshot_context=None)` 注入该书该实体**最新已入库**快照摘要——因章节并行解构，读到的可能非紧邻上一章，故口径为"最新可用、背景参考"，并强制"本章原文明确描述必须完整输出、未提及字段从快照沿用"（【增量约束】）。收益：省 token、状态演进可追踪；增量省略的字段由 §27.2 状态累积回填（`_backfill_snapshot` 逐属性最近非空）兜底，保证"省略不丢数据"。
+
 **场景切分**：超长章节（超过 `NOVEL_CHAPTER_MAX_CHARS=10000` 字符 ≈ 8k token）按段落贪心切成多个场景，每场景一次 LLM 调用（保证输入定长）；`novel_chapter.scene_count` 记录场景数。场景内最多缩窗重试 2 次，场景间错误隔离。
 
 ## 21. 幂等入库与跨章生命周期（persist）
@@ -444,13 +457,15 @@ chapter_prepare → [Send(agent)×8 并行] → validate_chapter → merge_chapt
 
 ## 23. 一致性校验与置信度闭环
 
-### 23.1 三层校验
+### 23.1 三层校验（= Agent 可靠性体系 Guardrails）
 
 | 层 | 位置 | 内容 |
 | --- | --- | --- |
 | Layer 0/1（章内） | `pipeline/validate.py`（persist_chapter 内） | schema 完整性、字段合法性、source_fragment 原文锚定、状态连续性（对比上一章快照） |
 | Layer 1（跨章） | `job_nodes.validate_book`（确定性，不调 LLM） | ① `timeline_event.global_sort` 全书有序（无倒退/重复 → `timeline_paradox`）；② `entity_snapshot` 跨章状态翻转需 `timeline_event_entity` 事件支撑（→ `state_jump`）；③ 同 ability 跨章矛盾 `cap` 且无 `balance_lock`（→ `rule_violation`） |
 | Layer 2（可选） | `validator_agent` | `NOVEL_VALIDATOR_ENABLED=0`（默认关），开启后按书批处理（`NOVEL_VALIDATOR_BATCH=50`），不阻塞图 |
+
+> 三层校验 + confidence 闭环 + 人工复核，配合 §22 乐观锁认领 / 僵死回收 / 多进程守卫（并发守护）与 §21 savepoint 隔离（单表失败不整章回滚），共同构成 **Agent 可靠性体系（Guardrails）**：确定性校验兜底结构错误、validator LLM 兜底语义矛盾、人工复核兜底主观误判。
 
 ### 23.2 validation_issue 与复核状态机
 
