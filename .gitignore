@@ -1,0 +1,41 @@
+# Python 缓存
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+
+# 环境配置
+.env
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# 临时代码 & 业务数据 & 分析文档（不公开）
+业务信息/
+frontend/node_modules/
+docs/开发阶段文档/
+backend/tests/
+backend/pytest.ini
+
+
+# 用户数据（运行后生成）
+story/
+chat_sessions/
+
+# 日志文件
+backend/src/logs/
+
+# Vue 项目
+VUE/node_modules/
+
+# 操作系统
+.DS_Store
+Thumbs.db
+
+# 临时文件
+temp/

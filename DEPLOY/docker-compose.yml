@@ -1,0 +1,139 @@
+services:
+  backend:
+    build:
+      context: ..
+      dockerfile: DEPLOY/Dockerfile.backend
+    ports:
+      - "8000:8000"
+    env_file: ../backend/src/.env
+    environment:
+      ENV_MODE: docker                     # 容器模式：禁止加载 .env，禁止 WSL 探测
+      MILVUS_HOST: milvus                  # 最高优先级，直接指定
+      MILVUS_PORT: "19530"                 # 覆盖 .env 占位符，容器内固定连 milvus 服务
+      AUTO_GET_WIN_HOST_IP: "False"        # 兜底
+      MANUAL_MILVUS_HOST: milvus           # 兜底
+      MYSQL_HOST: mysql                    # 容器内直连 mysql service（Spec-A）
+      MYSQL_PORT: "3306"                   # 覆盖 .env 占位符
+      DeepSeek_API_URL: "https://api.deepseek.com"  # 非敏感默认值，防缺失导致启动崩溃
+      SEED_DOCS_ENABLED: "1"               # 内置测试数据初始化开关（开发阶段默认开）
+      SEED_DOCS_DIR: "/app/start_files"    # 内置测试数据目录（挂载自 ../docs/start_files）
+    volumes:
+      - huggingface_cache:/root/.cache/huggingface
+      - ../docs/start_files:/app/start_files:ro
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    depends_on:
+      milvus:
+        condition: service_healthy
+      mysql:
+        condition: service_healthy
+
+  frontend:
+    build:
+      context: ..
+      dockerfile: DEPLOY/Dockerfile.frontend
+    ports:
+      - "80:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+
+  etcd:
+    image: quay.io/coreos/etcd:v3.5.25
+    command:
+      - etcd
+      - --data-dir=/etcd
+      - --name=etcd-node0
+      - --listen-client-urls=http://0.0.0.0:2379
+      - --advertise-client-urls=http://etcd:2379
+      - --listen-peer-urls=http://0.0.0.0:2380
+    volumes:
+      - etcd_data:/etcd
+    environment:
+      ETCD_AUTO_COMPACTION_MODE: revision
+      ETCD_AUTO_COMPACTION_RETENTION: 1000
+      ETCD_QUOTA_BACKEND_BYTES: 4294967296
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "etcdctl", "endpoint", "health", "--endpoints=http://127.0.0.1:2379"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  minio:
+    image: minio/minio:RELEASE.2024-12-18T13-15-44Z
+    command: server /data --console-address ":9001"
+    volumes:
+      - minio_data:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  milvus:
+    image: milvusdb/milvus:v2.6.19
+    command: ["milvus", "run", "standalone"]
+    volumes:
+      - milvus_data:/var/lib/milvus
+    environment:
+      ETCD_ENDPOINTS: etcd:2379
+      MINIO_ADDRESS: minio:9000
+    ports:
+      - "19530:19530"
+    depends_on:
+      etcd:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:9091/healthz"]
+      interval: 30s
+      timeout: 15s
+      retries: 5
+      start_period: 180s
+
+  attu:
+    image: zilliz/attu:latest
+    ports:
+      - "3000:3000"
+    environment:
+      MILVUS_URL: milvus:19530
+    depends_on:
+      milvus:
+        condition: service_healthy
+    restart: unless-stopped
+
+  mysql:
+    image: mysql:8.0
+    container_name: 006gaizao-mysql
+    env_file: ../backend/src/.env
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ../backend/scripts/init_db.sql:/docker-entrypoint-initdb.d/init_db.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h localhost -uroot -p$$MYSQL_ROOT_PASSWORD --silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    restart: unless-stopped
+
+volumes:
+  milvus_data:
+  etcd_data:
+  minio_data:
+  huggingface_cache:
+  mysql_data:

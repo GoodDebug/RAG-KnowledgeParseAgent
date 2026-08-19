@@ -1,0 +1,25 @@
+# 开发期 standalone MySQL（Spec-A §3.7，仿 docker-compose.milvus-only.yml 模式）
+# 用途：本地 WSL 内独立起 MySQL，供后端（127.0.0.1:3306）与 Win11 Navicat 连接；
+#       整体编排见 docker-compose.yml 的 mysql service（最终打包）。
+#
+# 启动：docker compose -f DEPLOY/docker-compose.mysql-only.yml up -d
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: 006gaizao-mysql
+    env_file: ../backend/src/.env           # 提供 MYSQL_ROOT_PASSWORD/MYSQL_DATABASE/MYSQL_USER/MYSQL_PASSWORD
+    ports:
+      - "3306:3306"                         # 发布到宿主，WSL/Navicat 均走 127.0.0.1:3306
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ../backend/scripts/init_db.sql:/docker-entrypoint-initdb.d/init_db.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h localhost -uroot -p$$MYSQL_ROOT_PASSWORD --silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    restart: unless-stopped
+
+volumes:
+  mysql_data:

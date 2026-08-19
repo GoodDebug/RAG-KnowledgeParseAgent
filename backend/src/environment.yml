@@ -1,0 +1,19 @@
+name: Smart-Customer-Service
+channels:
+  - defaults
+  - conda-forge
+dependencies:
+  # --- Python 基础 ---
+  - python>=3.11,<3.12
+  - pip>=26
+
+  # --- 系统依赖（GPU 推理需要） ---
+  - libgcc>=15
+  - libstdcxx>=15
+  - openssl>=3.5
+  - sqlite>=3.53
+
+  # --- pip 安装的 Python 包（版本锁定见上级目录 ../requirements.txt） ---
+  # 注意：conda 以本文件所在目录（backend/src/）为基准解析相对路径，故用 ../ 指向 backend/requirements.txt
+  - pip:
+    - -r ../requirements.txt
